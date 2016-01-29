@@ -21,3 +21,9 @@
 (defn now
   []
   (System/nanoTime))
+
+(def byte-array-type (Class/forName "[B"))
+
+(defn byte-array?
+  [v]
+  (instance? byte-array-type v))

@@ -47,7 +47,7 @@
 
 (defrecord Client [reactor]
   component/Lifecycle
-  (start [this] (assoc :ch (create (:commands reactor) (:endpoints this))))
+  (start [this] (assoc this :ch (create (:commands reactor) (:endpoints this))))
   (stop [this] (async/close! (:ch this)) this))
 
 (defn component

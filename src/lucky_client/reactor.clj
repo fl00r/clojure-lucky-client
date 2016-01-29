@@ -3,7 +3,7 @@
             [clojure.core.async :as async]
             [lucky-client.utils :as utils]
             [clojure.tools.logging :as log])
-  (:import [org.zeromq ZMQ ZMQ$Poller]))
+  (:import [org.zeromq ZMQ ZMQ$Poller ZMQ$Context ZMQ$Socket ZMQ$PollItem]))
 
 ;; Reactor consists of two loops:
 ;; - IO loop. This is the only place where we touch external ZMQ-sockets, it
@@ -16,18 +16,34 @@
 ;; and channel of replies.
 
 (defn send-all
-  [socket values]
-  (let [len (count values)]
+  [^ZMQ$Socket socket values]
+  (let [len (count values)
+        send-f (fn [v]
+                 (cond
+                   (string? v)
+                   (.send socket ^String v)
+                   (utils/byte-array? v)
+                   (.send socket ^bytes v)
+                   :else
+                   (throw (Exception. (str "Can't send to zmq type " (type v))))))
+        send-more-f (fn [v]
+                 (cond
+                   (string? v)
+                   (.sendMore socket ^String v)
+                   (utils/byte-array? v)
+                   (.sendMore socket ^bytes v)
+                   :else
+                   (throw (Exception. (str "Can't send to zmq type " (type v))))))]
     (loop [i 0]
       (cond
         (= len i) nil
-        (= len (inc i)) (do (.send socket (nth values i))
+        (= len (inc i)) (do (send-f (nth values i))
                             (recur (inc i)))
-        :else (do (.sendMore socket (nth values i))
+        :else (do (send-more-f (nth values i))
                   (recur (inc i)))))))
 
 (defn recv-all
-  [socket]
+  [^ZMQ$Socket socket]
   (loop [acc ()]
     (let [data (.recv socket ZMQ/DONTWAIT)]
       (when data
@@ -39,12 +55,12 @@
 (def FORCE-STOP-TIMEOUT (* 1000000000 5))
 
 (defn io-loop
-  [{:keys [zmq stopper id commands internal]}]
+  [{:keys [^ZMQ$Context zmq stopper id commands ^ZMQ$Socket internal]}]
   (async/thread
     (let [;; internal (doto (.socket zmq ZMQ/PULL)
           ;;            (.setLinger 0)
           ;;            (.bind (str "inproc://lucky_internal_" id)))
-          poller (doto (.poller zmq)
+          poller (doto ^ZMQ$Poller (.poller zmq)
                    (.setTimeout 500)
                    (.register internal ZMQ$Poller/POLLIN))
           external-handler
@@ -63,14 +79,14 @@
                 (recur (handler res data))
                 res)))
           internal-handler
-          (fn [poller sockets [command socket-id & tail]]
+          (fn [^ZMQ$Poller poller sockets [^bytes command ^bytes socket-id & tail]]
             (let [socket-id' (String. socket-id)]
               (case (String. command)
                 "CONNECT"
                 (try
-                  (let [socket (doto (.socket zmq ZMQ/DEALER)
+                  (let [^ZMQ$Socket socket (doto (.socket zmq ZMQ/DEALER)
                                  (.setLinger 1000))]
-                    (doseq [endpoint tail]
+                    (doseq [^bytes endpoint tail]
                       (.connect socket (String. endpoint)))
                     (.register poller socket ZMQ$Poller/POLLIN)
                     (cons [socket-id' socket] sockets))
@@ -79,7 +95,7 @@
                     (async/>!! commands [:error socket-id' e])
                     sockets))
                 "DISCONNECT"
-                (if-let [socket (utils/alist-find-by-k sockets socket-id')]
+                (if-let [^ZMQ$Socket socket (utils/alist-find-by-k sockets socket-id')]
                   (do
                     (.unregister poller socket)
                     (.close socket)
@@ -93,7 +109,7 @@
                   (do (log/error "Unknown socket in IO loop (from internal)")
                       sockets)))))
           handle-item-f
-          (fn [sockets item]
+          (fn [sockets ^ZMQ$PollItem item]
             (let [socket (.getSocket item)]
               (if-let [id (utils/alist-find-by-v sockets socket)]
                 (handle-socket-f socket (partial external-handler id))
@@ -110,13 +126,12 @@
           (and force-stop-at (< force-stop-at (utils/now)))
           (do (log/warn "Force stopping reactor")
               (.close internal)
-              (doseq [[_ s] sockets]
+              (doseq [[_ ^ZMQ$Socket s] sockets]
                 (.close s)))
 
           :else
           (do
             (.poll poller)
-            ;; (log/info "---INTERNAL STATUS" (-> poller (.getItem 0) (.isReadable)))
             (doseq [i (range 1 (.getNext poller))]
               (let [item (.getItem poller i)]
                 (when (.isReadable item)
@@ -135,7 +150,7 @@
               (recur force-stop-at sockets))))))))
 
 (defn command-loop
-  [{:keys [zmq commands id stopper]}]
+  [{:keys [^ZMQ$Context zmq commands id stopper]}]
   (let [internal (doto (.socket zmq ZMQ/PUSH)
                    (.connect (str "inproc://lucky_internal_" id))
                    (.setLinger 0))]
@@ -174,7 +189,7 @@
 (def IO->COMMANDS-BUFFER 100)
 
 (defn create
-  [zmq]
+  [^ZMQ$Context zmq]
   (let [stopper (async/promise-chan)
         id (utils/uuid)
         commands-ch (async/chan COMMANDS-BUFFER)
@@ -215,10 +230,12 @@
   component/Lifecycle
   (start [this]
     (let [[stopper commands] (create (:context zmq))]
-      (assoc :commands commands
+      (assoc this
+             :commands commands
              :stopper stopper)))
   (stop [this]
-    ((:stopper this) this)))
+    ((:stopper this))
+    this))
 
 (defn component []
-  (->Reactor []))
+  (map->Reactor {}))
