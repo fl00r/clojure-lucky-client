@@ -214,7 +214,7 @@
 (defrecord Reactor [zmq]
   component/Lifecycle
   (start [this]
-    (let [[stopper commands] (create zmq)]
+    (let [[stopper commands] (create (:context zmq))]
       (assoc :commands commands
              :stopper stopper)))
   (stop [this]
