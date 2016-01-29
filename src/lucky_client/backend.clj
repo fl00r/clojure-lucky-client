@@ -105,13 +105,13 @@
            (if-let [[command & tail] v]
              (case (String. command)
                "REQUEST"
-               (let [[id body] tail
+               (let [[id method body] tail
                      id' (String. id)
                      answer (async/promise-chan)]
                  (log/debug "Request received" endpoint id)
                  (async/go
                    (async/>! answers [id' (async/<! answer)]))
-                 (async/>! requests [answer body])
+                 (async/>! requests [answer (String. method) body])
                  (recur (assoc state
                                :in-progress (inc (:in-progress state))
                                :heartbeat-received (utils/now))))

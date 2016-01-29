@@ -15,8 +15,8 @@
          input ([v] (if-let [[command id & tail] v]
                       (case command
                         :request
-                        (let [[body answer] tail]
-                          (async/>! requests [id "" body])
+                        (let [[method body answer] tail]
+                          (async/>! requests [id "" method body])
                           (recur (assoc mapping id answer)))
                         :cancel (recur (dissoc mapping id)))
                       (async/close! requests)))
@@ -31,12 +31,12 @@
      input)))
 
 (defn request
-  ([client body] (request client body {}))
-  ([client body {:keys [timeout]}]
+  ([client method body] (request client method body {}))
+  ([client method body {:keys [timeout]}]
    (let [answer (async/promise-chan)
          id (utils/uuid)]
      (async/go
-       (async/>! client [:request id body answer])
+       (async/>! client [:request id method body answer])
        (if timeout
          (async/alt!
            (async/timeout timeout)

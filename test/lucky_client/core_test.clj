@@ -32,14 +32,15 @@
   (let [[backend-stopper requests] (backend/create *reactor* ["tcp://0.0.0.0:6001"])
         client (client/create *reactor* ["tcp://0.0.0.0:6000"])
         backend (async/go-loop []
-          (when-let [[answer body] (async/<! requests)]
-            (async/>! answer body)
-            (recur)))]
+                  (when-let [[answer method body] (async/<! requests)]
+                    (is (= "ping" method))
+                    (async/>! answer body)
+                    (recur)))]
     (try
       (Thread/sleep 500)
-      (let [res (client/request client "Hey, whatzuuup?")]
+      (let [res (client/request client "ping" "Hey, whatzuuup?")]
         (is (= "Hey, whatzuuup?" (String. (with-timeout res)))))
-      (let [res (client/request client "WHAT?")]
+      (let [res (client/request client "ping" "WHAT?")]
         (is (= "WHAT?" (String. (with-timeout res)))))
       (finally
         (async/close! client)
