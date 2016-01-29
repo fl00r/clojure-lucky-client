@@ -15,6 +15,7 @@
       (assoc state
              :out out
              :in in
+             :status :online
              :heartbeat-received (utils/now)
              :heartbeat-sent (utils/now)))))
 
@@ -45,13 +46,16 @@
 
 (def FORCE-STOP-TIMEOUT 5000)
 (def ANSWERS-BUFFER 10)
+(def INSTANCE-BUFFER 10)
 
 (defn instance
-  [reactor stopper requests endpoint options]
-  (let [answers (async/chan ANSWERS-BUFFER)]
+  [reactor stopper endpoint options]
+  (let [answers (async/chan ANSWERS-BUFFER)
+        requests (async/chan INSTANCE-BUFFER)]
     (log/info "Connect to" endpoint)
     (async/go-loop [state (->> {:in nil
                                 :out nil
+                                :running true
                                 :status :online
                                 :heartbeat-received (utils/now)
                                 :heartbeat-sent (utils/now)
@@ -62,22 +66,39 @@
                                 :timer (async/timeout CHECK-INTERVAL)}
                                (connect reactor endpoint)
                                (async/<!))]
-      (if (and (= :down (:status state)) (zero? (count (:requests state))))
+      ;; We can going to complete all requests for two reason:
+      ;; - Because endpoint sent us "disconnect", so we should continue working
+      ;; and retry connections
+      ;; - Because we are stopping. In this case we should send "DISCONNECT" and
+      ;; stop working
+      (cond
+        (and (= :down (:status state)) (zero? (:in-progress state)) (:running state))
         (do
+          (log/debug "Backend complete it work" endpoint)
+          (recur (async/<! (reconnect reactor endpoint state))))
+        (and (= :down (:status state)) (zero? (:in-progress state)) (not (:running state)))
+        (do
+          (log/debug "Backend is down" endpoint)
           (async/>! (:out state) ["DISCONNECT"])
+          (async/close! requests)
           (async/close! (:out state)))
+        :else
         (async/alt!
           (:force-stopper state)
           ([_]
+           (log/warn "Force stop backend" endpoint)
            (async/>! (:out state) ["DISCONNECT"])
+           (async/close! requests)
            (async/close! (:out state)))
           (:stopper state)
           ([_]
+           (log/debug "Go to shutdown" endpoint)
            (async/>! (:out state) ["SHUTDOWN"])
            (recur (assoc state
                          ;; we'll never stop again
                          :force-stopper (async/timeout FORCE-STOP-TIMEOUT)
                          :stopper (async/promise-chan)
+                         :running false
                          :status :shutdown)))
           (:in state)
           ([v]
@@ -87,6 +108,7 @@
                (let [[id body] tail
                      id' (String. id)
                      answer (async/promise-chan)]
+                 (log/debug "Request received" endpoint id)
                  (async/go
                    (async/>! answers [id' (async/<! answer)]))
                  (async/>! requests [answer body])
@@ -94,15 +116,21 @@
                                :in-progress (inc (:in-progress state))
                                :heartbeat-received (utils/now))))
                "HEARTBEAT"
-               (recur (assoc state :heartbeat-received (utils/now)))
+               (do
+                 (log/debug "Heartbeat received" endpoint)
+                 (recur (assoc state :heartbeat-received (utils/now))))
                "SHUTDOWN"
-               (recur (assoc state
-                             :state :down
-                             :heartbeat-received (utils/now)))
+               (do
+                 (log/debug "Shutdown received" endpoint)
+                 (recur (assoc state
+                               :status :down
+                               :heartbeat-received (utils/now))))
                "DISCONNECT"
-               (recur (assoc state
-                             :state :down
-                             :heartbeat-received (utils/now))))
+               (do
+                 (log/debug "Disconnect received" endpoint)
+                 (recur (assoc state
+                               :status :down
+                               :heartbeat-received (utils/now)))))
              (do
                (async/<! (async/timeout 1000))
                (recur (async/<! (reconnect reactor endpoint state))))))
@@ -115,7 +143,8 @@
           (:timer state)
           ([_] (-> (async/<! (check reactor endpoint state))
                    (assoc :timer (async/timeout CHECK-INTERVAL))
-                   (recur))))))))
+                   (recur))))))
+    requests))
 
 (def REQUESTS-BUFFER 100)
 
@@ -123,17 +152,17 @@
   ([reactor endpoints] (create reactor endpoints {}))
   ([reactor endpoints {:keys []}]
    (let [stopper (async/promise-chan)
-         requests (async/chan REQUESTS-BUFFER)]
-     ;; FIXME requests should be closed after stop
-     (doseq [endpoint endpoints]
-       (instance reactor stopper requests endpoint {}))
+         requests (async/merge (map (fn [endpoint]
+                                      (instance reactor stopper endpoint {}))
+                                    endpoints)
+                               REQUESTS-BUFFER)]
      [(fn [] (async/>!! stopper true))
       requests])))
 
 (defrecord Backend [reactor]
   component/Lifecycle
   (start [this]
-    (let [[stopper requests] (create reactor (:endpoints this))]
+    (let [[stopper requests] (create (:commands reactor) (:endpoints this))]
       (assoc this
              :requests requests
              :stopper stopper)))

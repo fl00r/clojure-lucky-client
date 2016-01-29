@@ -12,12 +12,12 @@
 (defn with-reactor
   [f]
   (let [zmq (zmq/create)
-        reactor (reactor/create zmq)]
+        [stopper reactor] (reactor/create zmq)]
     (try
       (binding [*reactor* reactor]
         (f))
       (finally
-        (async/close! reactor)
+        (stopper)
         (.term zmq)))))
 
 (use-fixtures :each with-reactor)
@@ -30,30 +30,35 @@
 
 (deftest basic-test
   (let [[backend-stopper requests] (backend/create *reactor* ["tcp://0.0.0.0:6001"])
-        client (client/create *reactor* ["tcp://0.0.0.0:6000"])]
+        client (client/create *reactor* ["tcp://0.0.0.0:6000"])
+        backend (async/go-loop []
+          (when-let [[answer body] (async/<! requests)]
+            (async/>! answer body)
+            (recur)))]
     (try
-      (async/go-loop []
-        (when-let [[answer body] (async/<! requests)]
-          (async/>! answer body)
-          (recur)))
       (Thread/sleep 500)
       (let [res (client/request client "Hey, whatzuuup?")]
         (is (= "Hey, whatzuuup?" (String. (with-timeout res)))))
       (let [res (client/request client "WHAT?")]
         (is (= "WHAT?" (String. (with-timeout res)))))
       (finally
-        (backend-stopper)))))
+        (async/close! client)
+        (backend-stopper)
+        (with-timeout backend)))))
 
 (defn start-backend
   []
   (let [zmq (zmq/create)
-        reactor (reactor/create zmq)
-        [backend-stopper requests] (backend/create reactor ["tcp://0.0.0.0:6001"])]
-    (async/go-loop []
-      (when-let [[answer body] (async/<! requests)]
-        (async/>! answer body)
-        (recur)))
+        [reactor-stopper reactor] (reactor/create zmq)
+        [backend-stopper requests] (backend/create reactor ["tcp://0.0.0.0:6001"])
+        worker (async/go-loop []
+                 (when-let [[answer body] (async/<! requests)]
+                   (async/>! answer body)
+                   (recur)))]
     (fn []
       (backend-stopper)
-      (async/close! reactor)
-      (.term zmq))))
+      (try
+        (with-timeout worker)
+        (finally
+          (reactor-stopper)
+          (.term zmq))))))

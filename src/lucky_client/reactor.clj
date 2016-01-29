@@ -36,6 +36,8 @@
             (recur acc')
             (reverse acc')))))))
 
+(def FORCE-STOP-TIMEOUT (* 1000000000 5))
+
 (defn io-loop
   [{:keys [zmq stopper id commands internal]}]
   (async/thread
@@ -43,7 +45,7 @@
           ;;            (.setLinger 0)
           ;;            (.bind (str "inproc://lucky_internal_" id)))
           poller (doto (.poller zmq)
-                   (.setTimeout 100)
+                   (.setTimeout 500)
                    (.register internal ZMQ$Poller/POLLIN))
           external-handler
           (fn [id data]
@@ -70,7 +72,7 @@
                                  (.setLinger 1000))]
                     (doseq [endpoint tail]
                       (.connect socket (String. endpoint)))
-                    (.register poller socket)
+                    (.register poller socket ZMQ$Poller/POLLIN)
                     (cons [socket-id' socket] sockets))
                   (catch Exception e
                     (log/error e "Can't connect")
@@ -96,32 +98,41 @@
               (if-let [id (utils/alist-find-by-v sockets socket)]
                 (handle-socket-f socket (partial external-handler id))
                 (log/error "Unknown socket in IO loop (from external)"))))]
-      (try
-        (loop [sockets ()]
-          (if-not (async/poll! stopper)
-            (do (.poll poller)
-                ;; (log/info "---INTERNAL STATUS" (-> poller (.getItem 0) (.isReadable)))
-                (doseq [i (range 1 (.getNext poller))]
-                  (let [item (.getItem poller i)]
-                    (when (.isReadable item)
-                      (try
-                        (handle-item-f sockets item)
-                        (catch Exception e
-                          (log/error e "Error while handling socket"))))))
-                (if (-> poller (.getItem 0) (.isReadable))
-                  (let [res (try
-                              (handle-socket-reduced-f internal sockets
-                                                       (partial internal-handler poller))
-                              (catch Exception e
-                                (log/error e "Error while handling internal socket")
-                                sockets))]
-                    (recur res))
-                  (recur sockets)))
-            (do (.close internal)
-                (doseq [[_ s] sockets]
-                  (.close s)))))
-        (finally
-          (.close internal))))))
+      (loop [force-stop-at nil sockets ()]
+        (cond
+          (and (async/poll! stopper) (nil? force-stop-at))
+          (recur (+ (utils/now) FORCE-STOP-TIMEOUT) sockets)
+
+          (and force-stop-at (zero? (count sockets)))
+          (do (.close internal)
+              nil)
+
+          (and force-stop-at (< force-stop-at (utils/now)))
+          (do (log/warn "Force stopping reactor")
+              (.close internal)
+              (doseq [[_ s] sockets]
+                (.close s)))
+
+          :else
+          (do
+            (.poll poller)
+            ;; (log/info "---INTERNAL STATUS" (-> poller (.getItem 0) (.isReadable)))
+            (doseq [i (range 1 (.getNext poller))]
+              (let [item (.getItem poller i)]
+                (when (.isReadable item)
+                  (try
+                    (handle-item-f sockets item)
+                    (catch Exception e
+                      (log/error e "Error while handling socket"))))))
+            (if (-> poller (.getItem 0) (.isReadable))
+              (let [res (try
+                          (handle-socket-reduced-f internal sockets
+                                                   (partial internal-handler poller))
+                          (catch Exception e
+                            (log/error e "Error while handling internal socket")
+                            sockets))]
+                (recur force-stop-at res))
+              (recur force-stop-at sockets))))))))
 
 (defn command-loop
   [{:keys [zmq commands id stopper]}]
@@ -170,17 +181,18 @@
         io->commands-ch (async/chan IO->COMMANDS-BUFFER)
         internal (doto (.socket zmq ZMQ/PULL)
                    (.setLinger 0)
-                   (.bind (str "inproc://lucky_internal_" id)))]
-    (command-loop {:zmq zmq
-                   :id id
-                   :commands commands-ch
-                   :stopper stopper})
-    (io-loop {:zmq zmq
-              :id id
-              :stopper stopper
-              :commands commands-ch
-              :internal internal})
-    commands-ch))
+                   (.bind (str "inproc://lucky_internal_" id)))
+        _ (command-loop {:zmq zmq
+                         :id id
+                         :commands commands-ch
+                         :stopper stopper})
+        process (io-loop {:zmq zmq
+                          :id id
+                          :stopper stopper
+                          :commands commands-ch
+                          :internal internal})]
+    [(fn [] (async/close! commands-ch) (async/<!! process))
+     commands-ch]))
 
 (def REQUESTS-BUFFER 100)
 (def REPLIES-BUFFER 100)
@@ -201,8 +213,12 @@
 
 (defrecord Reactor [zmq]
   component/Lifecycle
-  (start [this] (assoc :ch (create)))
-  (stop [this] (async/close! (:ch this)) this))
+  (start [this]
+    (let [[stopper commands] (create zmq)]
+      (assoc :commands commands
+             :stopper stopper)))
+  (stop [this]
+    ((:stopper this) this)))
 
 (defn component []
   (->Reactor []))
