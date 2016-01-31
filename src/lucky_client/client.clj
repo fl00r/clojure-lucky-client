@@ -9,14 +9,14 @@
   ([reactor endpoints] (create reactor endpoints {:buffer 10}))
   ([reactor endpoints {:keys [buffer]}]
    (let [input (async/chan buffer)
-         [requests replies] (reactor/register reactor endpoints)]
+         [requests replies] (reactor/register reactor :DEALER endpoints)]
      (async/go-loop [mapping {}]
        (async/alt!
          input ([v] (if-let [[command id & tail] v]
                       (case command
                         :request
                         (let [[method body answer] tail]
-                          (async/>! requests [id "" method body])
+                          (async/>! requests [id "" "REQUEST" method body])
                           (recur (assoc mapping id answer)))
                         :cancel (recur (dissoc mapping id)))
                       (async/close! requests)))

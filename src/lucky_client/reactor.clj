@@ -84,9 +84,12 @@
               (case (String. command)
                 "CONNECT"
                 (try
-                  (let [^ZMQ$Socket socket (doto (.socket zmq ZMQ/DEALER)
+                  (let [[type & endpoints] tail
+                        ^ZMQ$Socket socket (doto (.socket zmq (case (String. type)
+                                                                "DEALER" ZMQ/DEALER
+                                                                "ROUTER" ZMQ/ROUTER))
                                  (.setLinger 1000))]
-                    (doseq [^bytes endpoint tail]
+                    (doseq [^bytes endpoint endpoints]
                       (.connect socket (String. endpoint)))
                     (.register poller socket ZMQ$Poller/POLLIN)
                     (cons [socket-id' socket] sockets))
@@ -175,8 +178,8 @@
             (do (log/warn "Can't find connection" id)
                 (recur connections)))
           :register
-          (let [[endpoints replies] tail]
-            (send-all internal (concat ["CONNECT" id] endpoints))
+          (let [[type endpoints replies] tail]
+            (send-all internal (concat ["CONNECT" id (str type)] endpoints))
             (recur (assoc connections id replies)))
           :deregister
           (do (send-all internal ["DISCONNECT" id])
@@ -213,12 +216,12 @@
 (def REPLIES-BUFFER 100)
 
 (defn register
-  [reactor endpoints]
+  [reactor type endpoints]
   (let [requests (async/chan REQUESTS-BUFFER)
         replies (async/chan REPLIES-BUFFER)
         id (utils/uuid)]
     (async/go
-      (async/>! reactor [:register id endpoints replies])
+      (async/>! reactor [:register id (name type) endpoints replies])
       (loop []
         (if-let [v (async/<! requests)]
           (do (async/>! reactor [:request id v])
