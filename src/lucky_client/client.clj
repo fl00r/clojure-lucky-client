@@ -21,7 +21,7 @@
                         :cancel (recur (dissoc mapping id)))
                       (async/close! requests)))
          replies ([v]
-                  (when-let [[id delim body] v]
+                  (when-let [[id delim type body] v]
                     (let [id' (String. id)]
                       (if-let [answer (get mapping id')]
                         (do (async/>! answer body)
