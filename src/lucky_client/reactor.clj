@@ -17,8 +17,7 @@
 
 (defn send-all
   [^ZMQ$Socket socket values]
-  (let [len (count values)
-        send-f (fn [v]
+  (let [send-f (fn [v]
                  (cond
                    (string? v)
                    (.send socket ^String v)
@@ -27,20 +26,19 @@
                    :else
                    (throw (Exception. (str "Can't send to zmq type " (type v))))))
         send-more-f (fn [v]
-                 (cond
-                   (string? v)
-                   (.sendMore socket ^String v)
-                   (utils/byte-array? v)
-                   (.sendMore socket ^bytes v)
-                   :else
-                   (throw (Exception. (str "Can't send to zmq type " (type v))))))]
-    (loop [i 0]
-      (cond
-        (= len i) nil
-        (= len (inc i)) (do (send-f (nth values i))
-                            (recur (inc i)))
-        :else (do (send-more-f (nth values i))
-                  (recur (inc i)))))))
+                      (cond
+                        (string? v)
+                        (.sendMore socket ^String v)
+                        (utils/byte-array? v)
+                        (.sendMore socket ^bytes v)
+                        :else
+                        (throw (Exception. (str "Can't send to zmq type " (type v))))))]
+    (loop [[v & values] values]
+      (when v
+        (if (empty? values)
+          (send-f v)
+          (do (send-more-f v)
+              (recur values)))))))
 
 (defn recv-all
   [^ZMQ$Socket socket]
@@ -88,7 +86,7 @@
                         ^ZMQ$Socket socket (doto (.socket zmq (case (String. type)
                                                                 "DEALER" ZMQ/DEALER
                                                                 "ROUTER" ZMQ/ROUTER))
-                                 (.setLinger 1000))]
+                                             (.setLinger 1000))]
                     (doseq [^bytes endpoint endpoints]
                       (.connect socket (String. endpoint)))
                     (.register poller socket ZMQ$Poller/POLLIN)

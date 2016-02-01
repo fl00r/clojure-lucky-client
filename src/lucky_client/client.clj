@@ -22,12 +22,16 @@
                       (async/close! requests)))
          replies ([v]
                   (when-let [[id delim type body] v]
-                    (let [id' (String. id)]
-                      (if-let [answer (get mapping id')]
-                        (do (async/>! answer body)
-                            (recur (dissoc mapping id')))
-                        (do (log/warn "Unknown request" {:id id' :endpoints endpoints})
-                            (recur mapping))))))))
+                    (if (and id delim type body)
+                      (let [id' (String. id)]
+                        (if-let [answer (get mapping id')]
+                          (do (async/>! answer (case (String. type)
+                                                 "ERROR" (Exception. (String. body))
+                                                 "REPLY" body))
+                              (recur (dissoc mapping id')))
+                          (do (log/warn "Unknown request" {:id id' :endpoints endpoints})
+                              (recur mapping))))
+                      (recur mapping))))))
      input)))
 
 (defn request

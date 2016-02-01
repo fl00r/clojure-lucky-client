@@ -65,11 +65,17 @@
                      (async/>! answers [route (async/<! answer)]))
                    (async/>! requests [answer method body])
                    (recur (assoc state :in-progress (inc (:in-progress state)))))
-                 (log/error "Unknown command" command))
-               (log/error "Bad message format"))))
+                 (do
+                   (log/error "Unknown command" command)
+                   (recur state)))
+               (do
+                 (log/error "Bad message format")
+                 (recur state)))))
           answers
           ([[route value]]
-           (async/>! out (concat route ["" "REPLY" value]))
+           (if (instance? Throwable value)
+             (async/>! out (concat route ["" "ERROR" (str value)]))
+             (async/>! out (concat route ["" "REPLY" value])))
            (recur (assoc state :in-progress (dec (:in-progress state))))))))
     requests))
 
