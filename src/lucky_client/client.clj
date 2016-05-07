@@ -15,21 +15,21 @@
          input ([v] (if-let [[command id & tail] v]
                       (case command
                         :request
-                        (let [[method body answer start timeout] tail]
-                          (if timeout
-                            (let [now (System/nanoTime)
-                                  timeout* (-> timeout (* 1000) (+ start) (- now) (/ 1000) int)
-                                  timeout* (if (pos? timeout*) timeout* 0)]
-                              (async/alt!
-                                [[requests [id "" "REQUEST" method body]]]
-                                ([_] (recur (assoc mapping id answer)))
-                                (async/timeout timeout*)
-                                ([_]
-                                 (async/>! answer (Exception. "Timeout"))
-                                 (recur mapping))))
-                            (do
-                              (async/>! requests [id "" "REQUEST" method body])
-                              (recur (assoc mapping id answer))))))
+                        (let [[method body answer timeout-chan timeout-fn] tail]
+                          (if timeout-chan
+                            (do (async/alt!
+                                  [[requests [id "" "REQUEST" method body]]]
+                                  ([_]
+                                   (async/<! timeout-chan)
+                                   (async/>! input [:cancel id])
+                                   (timeout-fn))
+                                  timeout-chan ([_]
+                                                (async/>! input [:cancel id])
+                                                (timeout-fn)))
+                                (recur (assoc mapping id answer)))
+                            (do (async/>! requests [id "" "REQUEST" method body])
+                                (recur (assoc mapping id answer)))))
+                        :cancel (recur (dissoc mapping id)))
                       (async/close! requests)))
          replies ([v]
                   (when-let [[id delim type body] v]
@@ -52,11 +52,14 @@
          id (utils/uuid)]
      (async/go
        (if timeout
-         (async/alt!
-           [[client [:request id method body answer (System/nanoTime) timeout]]] :ok
-           (async/timeout timeout)
-           ([_]
-            (async/>! answer (Exception. "Timeout"))))
+         (let [timeout-chan (async/timeout timeout)
+               timeout-fn (async/>! answer
+                                    (Exception. (str "Client Timeout: " timeout
+                                                     ", method: " method
+                                                     ", body: " body)))]
+           (async/alt!
+             [[client [:request id method body answer timeout-chan timeout-fn]]] :ok
+             timeout-chan ([_] (timeout-fn))))
          (async/>! client [:request id method body answer])))
      answer)))
 
