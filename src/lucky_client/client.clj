@@ -15,17 +15,21 @@
          input ([v] (if-let [[command id & tail] v]
                       (case command
                         :request
-                        (let [[method body answer timeout-chan timeout-fn] tail]
+                        (let [[method body answer timeout-chan timeout] tail]
                           (if timeout-chan
                             (do (async/alt!
                                   [[requests [id "" "REQUEST" method body]]]
                                   ([_]
                                    (async/<! timeout-chan)
                                    (async/>! input [:cancel id])
-                                   (timeout-fn))
+                                   (async/>! answer
+                                             (Exception. (str "Client Timeout**: " timeout
+                                                              ", method: " method))))
                                   timeout-chan ([_]
                                                 (async/>! input [:cancel id])
-                                                (timeout-fn)))
+                                                (async/>! answer
+                                                          (Exception. (str "Client Timeout*: " timeout
+                                                                           ", method: " method)))))
                                 (recur (assoc mapping id answer)))
                             (do (async/>! requests [id "" "REQUEST" method body])
                                 (recur (assoc mapping id answer)))))
@@ -52,13 +56,12 @@
          id (utils/uuid)]
      (async/go
        (if timeout
-         (let [timeout-chan (async/timeout timeout)
-               timeout-fn #(async/>! answer
-                                     (Exception. (str "Client Timeout: " timeout
-                                                      ", method: " method)))]
+         (let [timeout-chan (async/timeout timeout)]
            (async/alt!
-             [[client [:request id method body answer timeout-chan timeout-fn]]] :ok
-             timeout-chan ([_] (timeout-fn))))
+             [[client [:request id method body answer timeout-chan timeout]]] :ok
+             timeout-chan ([_] (async/>! answer
+                                         (Exception. (str "Client Timeout: " timeout
+                                                          ", method: " method))))))
          (async/>! client [:request id method body answer])))
      answer)))
 
