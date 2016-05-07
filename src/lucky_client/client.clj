@@ -20,11 +20,12 @@
                             (do (async/alt!
                                   [[requests [id "" "REQUEST" method body]]]
                                   ([_]
-                                   (async/<! timeout-chan)
-                                   (async/>! input [:cancel id])
-                                   (async/>! answer
-                                             (Exception. (str "Client Timeout**: " timeout
-                                                              ", method: " method))))
+                                   (async/go
+                                     (async/<! timeout-chan)
+                                     (async/>! input [:cancel id])
+                                     (async/>! answer
+                                               (Exception. (str "Client Timeout**: " timeout
+                                                               ", method: " method)))))
                                   timeout-chan ([_]
                                                 (async/>! input [:cancel id])
                                                 (async/>! answer
