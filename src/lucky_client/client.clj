@@ -53,10 +53,9 @@
      (async/go
        (if timeout
          (let [timeout-chan (async/timeout timeout)
-               timeout-fn (async/>! answer
-                                    (Exception. (str "Client Timeout: " timeout
-                                                     ", method: " method
-                                                     ", body: " body)))]
+               timeout-fn #(async/>! answer
+                                     (Exception. (str "Client Timeout: " timeout
+                                                      ", method: " method)))]
            (async/alt!
              [[client [:request id method body answer timeout-chan timeout-fn]]] :ok
              timeout-chan ([_] (timeout-fn))))
