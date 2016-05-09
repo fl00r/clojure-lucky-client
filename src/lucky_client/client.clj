@@ -6,7 +6,7 @@
             [lucky-client.utils :as utils]))
 
 (defn create
-  ([reactor endpoints] (create reactor endpoints {:buffer 10}))
+  ([reactor endpoints] (create reactor endpoints {:buffer 100}))
   ([reactor endpoints {:keys [buffer]}]
    (let [input (async/chan buffer)
          [requests replies] (reactor/register reactor :DEALER endpoints)]
