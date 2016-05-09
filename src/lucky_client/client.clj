@@ -56,14 +56,18 @@
    (let [answer (async/promise-chan)
          id (utils/uuid)]
      (async/go
-       (if timeout
-         (let [timeout-chan (async/timeout timeout)]
-           (async/alt!
-             [[client [:request id method body answer timeout-chan timeout]]] :ok
-             timeout-chan ([_] (async/>! answer
-                                         (Exception. (str "Client Timeout: " timeout
-                                                          ", method: " method))))))
-         (async/>! client [:request id method body answer])))
+       (try
+         (if timeout
+           (let [timeout-chan (async/timeout timeout)]
+             (async/alt!
+               [[client [:request id method body answer timeout-chan timeout]]] :ok
+               timeout-chan ([_] (async/>! answer
+                                           (Exception. (str "Client Timeout: " timeout
+                                                            ", method: " method))))))
+           (async/>! client [:request id method body answer]))
+         (catch Throwable e
+           ;; Usually here is Buffer overflow exception
+           (async/>! answer e))))
      answer)))
 
 (defrecord Client [reactor]
