@@ -15,17 +15,21 @@
          input ([v] (if-let [[command id & tail] v]
                       (case command
                         :request
-                        (let [[method body answer timeout-chan timeout] tail]
+                        (let [[method body answer timeout-chan timeout-cancel-chan timeout] tail]
                           (if timeout-chan
                             (do (async/alt!
                                   [[requests [id "" "REQUEST" method body]]]
                                   ([_]
                                    (async/go
-                                     (async/<! timeout-chan)
-                                     (async/>! input [:cancel id])
-                                     (async/>! answer
-                                               (Exception. (str "Client Timeout**: " timeout
-                                                               ", method: " method)))))
+                                     (async/alt!
+                                       timeout-cancel-chan :ok
+                                       timeout-chan
+                                       ([_]
+                                        (async/>! input [:cancel id])
+                                        (async/>! answer
+                                                  (Exception. (str "Client Timeout**: " timeout
+                                                                   ", method: " method))))
+                                       :priority true)))
                                   timeout-chan ([_]
                                                 (async/>! input [:cancel id])
                                                 (async/>! answer
@@ -33,17 +37,18 @@
                                                                            ", method: " method)))))
                                 (recur (assoc mapping id answer)))
                             (do (async/>! requests [id "" "REQUEST" method body])
-                                (recur (assoc mapping id answer)))))
+                                (recur (assoc mapping id [answer timeout-cancel-chan])))))
                         :cancel (recur (dissoc mapping id)))
                       (async/close! requests)))
          replies ([v]
                   (when-let [[id delim type body] v]
                     (if (and id delim type body)
                       (let [id' (String. id)]
-                        (if-let [answer (get mapping id')]
-                          (do (async/>! answer (case (String. type)
-                                                 "ERROR" (Exception. (String. body))
-                                                 "REPLY" body))
+                        (if-let [[answer timeout-cancel-chan] (get mapping id')]
+                          (do (async/>! timeout-cancel-chan true)
+                              (async/>! answer (case (String. type)
+                                                    "ERROR" (Exception. (String. body))
+                                                    "REPLY" body))
                               (recur (dissoc mapping id')))
                           (do (log/warn "Unknown request" {:id id' :endpoints endpoints})
                               (recur mapping))))
@@ -58,9 +63,10 @@
      (async/go
        (try
          (if timeout
-           (let [timeout-chan (async/timeout timeout)]
+           (let [timeout-chan (async/timeout timeout)
+                 timeout-cancel-chan (async/chan)]
              (async/alt!
-               [[client [:request id method body answer timeout-chan timeout]]] :ok
+               [[client [:request id method body answer timeout-chan timeout-cancel-chan timeout]]] :ok
                timeout-chan ([_] (async/>! answer
                                            (Exception. (str "Client Timeout: " timeout
                                                             ", method: " method))))))
