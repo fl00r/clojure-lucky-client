@@ -35,7 +35,7 @@
                                                 (async/>! answer
                                                           (Exception. (str "Client Timeout*: " timeout
                                                                            ", method: " method)))))
-                                (recur (assoc mapping id answer)))
+                                (recur (assoc mapping id [answer timeout-cancel-chan])))
                             (do (async/>! requests [id "" "REQUEST" method body])
                                 (recur (assoc mapping id [answer timeout-cancel-chan])))))
                         :cancel (recur (dissoc mapping id)))
@@ -45,7 +45,7 @@
                     (if (and id delim type body)
                       (let [id' (String. id)]
                         (if-let [[answer timeout-cancel-chan] (get mapping id')]
-                          (do (async/>! timeout-cancel-chan true)
+                          (do (when timeout-cancel-chan (async/>! timeout-cancel-chan true))
                               (async/>! answer (case (String. type)
                                                     "ERROR" (Exception. (String. body))
                                                     "REPLY" body))
